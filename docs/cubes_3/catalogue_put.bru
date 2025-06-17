@@ -1,0 +1,27 @@
+meta {
+  name: catalogue_put
+  type: http
+  seq: 4
+}
+
+put {
+  url: http://localhost:3000/api/catalogue/quantity
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "orderId": "test1",
+    "items": [
+      {
+        "articleId": "673232f300a81338568058ca",
+        "qteCmd": 2
+      },
+      {
+        "articleId": "673232f300a81338568058cb",
+        "qteCmd": 10
+      }
+    ]
+  }
+}

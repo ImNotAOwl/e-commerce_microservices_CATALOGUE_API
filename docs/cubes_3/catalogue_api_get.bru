@@ -1,0 +1,17 @@
+meta {
+  name: catalogue_api_get
+  type: http
+  seq: 2
+}
+
+get {
+  url: http://localhost:3002/api/health
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "name": "toto"
+  }
+}

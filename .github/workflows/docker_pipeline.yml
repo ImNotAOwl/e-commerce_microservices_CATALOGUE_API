@@ -1,0 +1,204 @@
+name: CI Pipeline + Docker Push
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build_and_tests:
+    runs-on: ubuntu-latest
+
+    env:
+      NODE_ENV: production
+      CATALOG_PORT: 3000
+      CATALOG_DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      LOGS_PATH: ${PWD}
+      CATALOG_USER: ${{ secrets.CATALOG_USER }}
+      CATALOG_PASS: ${{ secrets.CATALOG_PASS }}
+      DB_SERVICE: catalogue
+      RABBITMQ_PROTOCOL: amqp
+      RABBITMQ_USER: ${{ secrets.RABBITMQ_USER }}
+      RABBITMQ_PASSWORD: ${{ secrets.RABBITMQ_PASSWORD }}
+      RABBITMQ_HOST: ${{ secrets.RABBITMQ_HOST }}
+      RABBITMQ_PORT: 5672
+      RABBITMQ_VHOST: /
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+      SONAR_PROJECT_KEY: ${{ secrets.SONAR_PROJECT_KEY }}
+      SONAR_HOST_URL: https://sonarcloud.io
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Use Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm install --production=false
+
+      - name: Build application
+        run: npm run build
+
+      - name: Run tests
+        run: npm run test:coverage
+
+      - name: Check test results
+        run: |
+          if [ -f coverage/lcov-report/index.html ]; then
+            echo "Tests passed"
+          else
+            echo "Tests failed"
+            exit 1
+          fi
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage/lcov.info      
+
+  sonarqube:
+    needs: build_and_tests
+    runs-on: ubuntu-latest
+
+    env:
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+      SONAR_PROJECT_KEY: ${{ secrets.SONAR_PROJECT_KEY }}
+      SONAR_HOST_URL: https://sonarcloud.io
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Download coverage report
+        uses: actions/download-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage
+
+      - name: SonarQube Scan
+        uses: SonarSource/sonarqube-scan-action@v4
+        with:
+          args: >
+            -Dsonar.projectKey=${{ secrets.SONAR_PROJECT_KEY }}
+            -Dsonar.organization=${{ secrets.SONAR_ORGANIZATION }}
+            -Dsonar.sources=src
+            -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info
+            -Dsonar.exclusions=node_modules/**,dist/**,**/openapi.yaml,coverage/**
+
+      # - name: Wait for SonarQube Quality Gate
+      #   uses: SonarSource/sonarqube-quality-gate-action@v1
+      #   with:
+      #     pollingTimeoutSec: 600
+
+      # - name: "Example show SonarQube Quality Gate Status value"
+      #   run: echo "The Quality Gate status is ${{ steps.sonarqube-quality-gate-check.outputs.quality-gate-status }}"
+
+  push_to_registries:
+    name: Push Docker image to GHCR.io
+    needs: [build_and_tests, sonarqube]
+    runs-on: ubuntu-latest
+
+    env:
+      NODE_ENV: production
+      CATALOG_PORT: 3000
+      CATALOG_DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      LOGS_PATH: ${PWD}
+      CATALOG_USER: ${{ secrets.CATALOG_USER }}
+      CATALOG_PASS: ${{ secrets.CATALOG_PASS }}
+      DB_SERVICE: catalogue
+      RABBITMQ_PROTOCOL: amqp
+      RABBITMQ_USER: ${{ secrets.RABBITMQ_USER }}
+      RABBITMQ_PASSWORD: ${{ secrets.RABBITMQ_PASSWORD }}
+      RABBITMQ_HOST: ${{ secrets.RABBITMQ_HOST }}
+      RABBITMQ_PORT: 5672
+      RABBITMQ_VHOST: /
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    permissions:
+      packages: write
+      contents: read
+      attestations: write
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      - name: Convert repository name to lowercase
+        id: convert_repo
+        run: echo "::set-output name=lowercase_repo::$(echo ${{ github.repository }} | tr '[:upper:]' '[:lower:]')"
+
+      - name: Log in to the Container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Get latest Docker tag
+        id: get_tag
+        run: |
+          owner=${{ github.repository_owner }}
+          repo=${{ github.event.repository.name }}
+          package_name=catalogue_api%2Fcatalogue_service
+
+          # Récupération des tags (on gère plusieurs pages avec 'per_page=100')
+          tags=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+          "https://api.github.com/orgs/$owner/packages/container/$package_name/versions?per_page=100" | \
+          jq -r '.[].metadata.container.tags[]' | \
+          grep -E '^[0-9]+\.[0-9]+$' || echo "0.0")
+
+          # Trier et obtenir le dernier tag (si aucun tag, on commence à 0.0)
+          latest_tag=$(echo "$tags" | sort -V | tail -n 1)
+          echo "Latest tag: $latest_tag"
+          echo "::set-output name=latest_tag::$latest_tag"
+
+      - name: Increment tag
+        id: increment_tag
+        run: |
+          latest_tag=${{ steps.get_tag.outputs.latest_tag }}
+          IFS='.' read -r -a array <<< "$latest_tag"
+          major=${array[0]}
+          minor=${array[1]}
+          new_minor=$((minor + 1))
+          new_tag="$major.$new_minor"
+          echo "New tag: $new_tag"
+          echo "::set-output name=new_tag::$new_tag"
+
+      - name: Extract metadata (tags, labels) for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ghcr.io/${{ steps.convert_repo.outputs.lowercase_repo }}/catalogue_service
+            ghcr.io/${{ steps.convert_repo.outputs.lowercase_repo }}/catalogue_service:latest
+
+      - name: Build and push Docker images
+        id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ghcr.io/${{ steps.convert_repo.outputs.lowercase_repo }}/catalogue_service:${{ steps.increment_tag.outputs.new_tag }}
+            ghcr.io/${{ steps.convert_repo.outputs.lowercase_repo }}/catalogue_service:latest
+          labels: ${{ steps.meta.outputs.labels }}
+          network: host
+      
+      - name: Trigger Deployment Pipeline
+        run: |
+          owner=${{ github.repository_owner }}
+          curl -X POST \
+          -H "Accept: application/vnd.github.everest-preview+json" \
+          -H "Authorization: Bearer ${{ secrets.DEPLOY_GH_PAT }}" \
+          https://api.github.com/repos/$owner/DEPLOYMENT/dispatches \
+          -d '{"event_type": "deploy_apis", "client_payload": {"service_name": "bs_catalogue-api"}}'

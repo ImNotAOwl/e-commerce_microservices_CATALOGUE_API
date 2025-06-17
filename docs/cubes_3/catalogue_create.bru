@@ -1,0 +1,23 @@
+meta {
+  name: catalogue_create
+  type: http
+  seq: 1
+}
+
+post {
+  url: http://localhost:3000/api/catalogue
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "title": "Introduction à TypeScript",
+    "description": "Un livre détaillé pour apprendre les bases et les concepts avancés de TypeScript.",
+    "image": "https://example.com/images/typescript-book.jpg",
+    "price": 35,
+    "quantity": 100,
+    "brand": "FitTrack",
+    "rating": 4.7
+  }
+}

@@ -1,0 +1,60 @@
+include:
+  - ./.docker/mongo/docker-compose.mongo.yml
+
+services:
+  catalog-rabbitmq:
+    image: rabbitmq:4.0-management
+    hostname: catalog-rabbitmq
+    container_name: catalog-rabbitmq
+    env_file:
+      - .env
+    networks:
+      catalog_network:
+        ipv4_address: 172.50.0.5
+    ports:
+      - '5672:5672' # Port pour les connexions AMQP
+      - '15672:15672' # Port pour l'interface de gestion web
+    environment:
+      - RABBITMQ_DEFAULT_USER=${RABBITMQ_DEFAULT_USER}
+      - RABBITMQ_DEFAULT_PASS=${RABBITMQ_DEFAULT_PASS}
+    healthcheck:
+      test: rabbitmq-diagnostics -q ping
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    volumes:
+      - ./.docker/rabbitmq/init-rabbitmq.sh:/etc/rabbitmq/init-rabbitmq.sh
+    command: >
+      sh -c "rabbitmq-server &
+            bash /etc/rabbitmq/init-rabbitmq.sh &&
+            tail -f /dev/null"
+    restart: unless-stopped
+
+  catalog-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: catalog-service:latest
+    container_name: catalog-service
+    ports:
+      - 3002:3000
+    env_file:
+      - .env
+    networks:
+      catalog_network:
+        ipv4_address: 172.50.0.1
+    depends_on:
+      temp-instance:
+        condition: service_healthy
+      catalog-rabbitmq:
+        condition: service_healthy
+
+networks:
+  catalog_network:
+    name: catalog_network
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.50.0.0/16
+          ip_range: 172.50.0.0/24
+          gateway: 172.50.0.254

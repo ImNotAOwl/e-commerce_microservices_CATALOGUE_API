@@ -1,0 +1,9 @@
+{
+  "version": "1",
+  "name": "cubes_3",
+  "type": "collection",
+  "ignore": [
+    "node_modules",
+    ".git"
+  ]
+}
